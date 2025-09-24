@@ -1,4 +1,4 @@
-# bronze/raw_writer.py (Databricks-friendly, dbutils-safe)
+# bronze/raw_writer.py (Unity Catalog Volumes friendly; no dbutils needed)
 
 from __future__ import annotations
 import json, gzip, os, hashlib, tempfile
@@ -6,52 +6,35 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Mapping
 
-# --- dbutils helper ---------------------------------------------------------
-
-def _get_dbutils():
-    """
-    Return a dbutils handle when running in Databricks.
-    - In a notebook: uses injected `dbutils`.
-    - In jobs/clusters: constructs via SparkSession.
-    - Outside Databricks: returns None.
-    """
-    try:
-        return dbutils  # type: ignore[name-defined]
-    except NameError:
-        pass
-    try:
-        from pyspark.sql import SparkSession  # type: ignore
-        from pyspark.dbutils import DBUtils   # type: ignore
-        spark = SparkSession.builder.getOrCreate()
-        return DBUtils(spark)
-    except Exception:
-        return None
-
-# --- DBFS helpers -----------------------------------------------------------
+# --- Path helpers -----------------------------------------------------------
 
 def _to_local_path(p: str | Path) -> Path:
+    """
+    Map URIs to local POSIX paths where possible.
+    - dbfs:/Volumes/...  -> /Volumes/...
+    - /Volumes/...        -> /Volumes/... (as-is)
+    - dbfs:/...           -> /dbfs/...   (legacy fallback if DBFS root enabled)
+    - anything else       -> as Path(...)
+    """
     s = str(p)
+    if s.startswith("dbfs:/Volumes/"):
+        return Path("/Volumes") / s[len("dbfs:/Volumes/"):]
+    if s.startswith("/Volumes/"):
+        return Path(s)
     if s.startswith("dbfs:/"):
         return Path("/dbfs") / s[len("dbfs:/"):]
     return Path(s)
 
 def _from_local_to_uri(p: str, base_dir: str) -> str:
+    """
+    Convert local POSIX paths back to the URI form matching base_dir.
+    Keeps returned metadata pretty (dbfs:/Volumes/...), not /Volumes/...
+    """
+    if str(base_dir).startswith("dbfs:/Volumes/") and p.startswith("/Volumes/"):
+        return "dbfs:/Volumes/" + p[len("/Volumes/"):]
     if str(base_dir).startswith("dbfs:/") and p.startswith("/dbfs/"):
         return "dbfs:/" + p[len("/dbfs/"):]
     return p
-
-def _is_dbfs_path(p: Path) -> bool:
-    return str(p).startswith("/dbfs/")
-
-def _mkdirs(path: Path) -> None:
-    """Create parent dirs. Use dbutils for DBFS, normal mkdir otherwise."""
-    if _is_dbfs_path(path):
-        dbu = _get_dbutils()
-        if dbu is None:
-            raise RuntimeError("DBFS path detected but dbutils is unavailable.")
-        dbu.fs.mkdirs("dbfs:/" + str(path)[len("/dbfs/"):])
-    else:
-        path.mkdir(parents=True, exist_ok=True)
 
 # --- small utils ------------------------------------------------------------
 
@@ -62,14 +45,10 @@ def _checksum_md5(s: str) -> str:
     return hashlib.md5(s.encode("utf-8")).hexdigest()
 
 def _atomic_write_text(path: Path, text: str) -> None:
-    """Sidecar writer (manifest/checksum). Use dbutils on DBFS; atomic tempfile locally."""
-    if _is_dbfs_path(path):
-        dbu = _get_dbutils()
-        if dbu is None:
-            raise RuntimeError("DBFS path detected but dbutils is unavailable.")
-        _mkdirs(path.parent)
-        dbu.fs.put("dbfs:/" + str(path)[len("/dbfs/"):], text, overwrite=True)
-        return
+    """
+    Safe text write (manifest/checksum) via tempfile + atomic replace.
+    Works on /Volumes/... and local paths.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("wt", delete=False, dir=path.parent, encoding="utf-8") as tmp:
         tmp.write(text)
@@ -83,7 +62,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
 def write_raw_jsonl(
     *,
     raw_text: str,
-    base_dir: str,                    # e.g., "dbfs:/FileStore/bronze" or "./data/bronze"
+    base_dir: str,                    # e.g., "dbfs:/Volumes/demo_cat/raw/vol_spotify/bronze"
     dataset: str,                     # e.g., "spotify_search"
     partitions: Mapping[str, str] | None = None,  # e.g., {"q":"videoclub","type":"artist"}
     run_id: str | None = None,        # if None, auto timestamp id
@@ -111,7 +90,7 @@ def write_raw_jsonl(
             parts.append(Path(f"{k}={safe}"))
     parts += [Path(f"dt={dt}"), Path(f"run_id={rid}")]
     dest_dir = Path(*parts)
-    _mkdirs(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
 
     # File stems
     stem = dest_dir / f"page={page}"
@@ -123,21 +102,9 @@ def write_raw_jsonl(
     if data_path.exists() and not overwrite:
         raw = raw_text
     else:
-        if _is_dbfs_path(data_path):
-            # robust: /tmp -> copy to dbfs
-            with tempfile.TemporaryDirectory() as tdir:
-                tmp_out = Path(tdir) / data_path.name
-                with gzip.open(tmp_out, "wt", encoding="utf-8") as f:
-                    f.write(raw_text.strip().replace("\n", " ") + "\n")
-                _mkdirs(data_path.parent)
-                dbu = _get_dbutils()
-                if dbu is None:
-                    raise RuntimeError("DBFS path detected but dbutils is unavailable.")
-                dbu.fs.cp("file:" + str(tmp_out), "dbfs:/" + str(data_path)[len("/dbfs/"):], recurse=False)
-        else:
-            data_path.parent.mkdir(parents=True, exist_ok=True)
-            with gzip.open(data_path, "wt", encoding="utf-8") as f:
-                f.write(raw_text.strip().replace("\n", " ") + "\n")
+        data_path.parent.mkdir(parents=True, exist_ok=True)
+        with gzip.open(data_path, "wt", encoding="utf-8") as f:
+            f.write(raw_text.strip().replace("\n", " ") + "\n")
         raw = raw_text
 
     # Checksum sidecar
