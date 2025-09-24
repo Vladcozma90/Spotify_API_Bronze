@@ -1,4 +1,4 @@
-from util import _ensure_dict, _ensure_list
+from Spotify.util import _ensure_dict, _ensure_list
 
 
 def validate_json(payload: dict) -> None:
