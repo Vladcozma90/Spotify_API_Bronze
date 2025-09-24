@@ -17,17 +17,17 @@ class SpotifyOAuthClient:
         
         
     def get_token(self, retires: int = 3, backoff: int = 1):
-        if self._token or time.time() < self._exp - 30:
+        if self._token and time.time() < self._exp - 30:
             return self._token
         
         data = {"grant_type": "client_credentials"}
-        auth = {self.client_id : self.client_secret}
+        auth = (self.client_id, self.client_secret)
 
         for attempt in range(1, retires+1):
             logger.info("requesting the token from the API %s/%s ", attempt, retires)
             try:
                 r = requests.post(BASE_URL, data=data, auth=auth, timeout=20)
-                if (r.status_code == 429) or (500 < r.status_code < 600) and attempt < retires:
+                if (r.status_code == 429) or (500 <= r.status_code < 600) and attempt < retires:
                     wait = attempt * backoff
                     time.sleep(wait)
                     continue
