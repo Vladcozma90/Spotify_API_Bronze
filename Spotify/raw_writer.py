@@ -35,7 +35,25 @@ def _now_iso() -> str:
 def _checksum_md5(s: str) -> str:
     return hashlib.md5(s.encode("utf-8")).hexdigest()
 
+# in Spotify/raw_writer.py
 def _atomic_write_text(path: Path, text: str) -> None:
+    p_str = str(path)
+    # If target is on DBFS, use dbutils.fs.put (simple & reliable on Databricks)
+    if p_str.startswith("/dbfs/"):
+        try:
+            dbfs_uri = "dbfs:/" + p_str[len("/dbfs/"):]
+            # ensure parent dir exists
+            parent_uri = "dbfs:/" + str(path.parent)[len("/dbfs/"):]
+            try:
+                dbutils.fs.mkdirs(parent_uri)
+            except Exception:
+                pass
+            dbutils.fs.put(dbfs_uri, text, overwrite=True)
+            return
+        except Exception:
+            pass  # fall back to local method if dbutils is unavailable
+
+    # Fallback: local/normal FS atomic write
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", delete=False, dir=path.parent, encoding="utf-8") as tmp:
         tmp.write(text)
@@ -43,6 +61,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
         os.fsync(tmp.fileno())
         tmp_path = Path(tmp.name)
     os.replace(tmp_path, path)
+
 
 # --- main API ---------------------------------------------------------------
 
