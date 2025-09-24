@@ -1,10 +1,31 @@
-# bronze/raw_writer.py (Databricks-friendly)
+# bronze/raw_writer.py (Databricks-friendly, dbutils-safe)
 
 from __future__ import annotations
 import json, gzip, os, hashlib, tempfile
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Mapping
+
+# --- dbutils helper ---------------------------------------------------------
+
+def _get_dbutils():
+    """
+    Return a dbutils handle when running in Databricks.
+    - In a notebook: uses injected `dbutils`.
+    - In jobs/clusters: constructs via SparkSession.
+    - Outside Databricks: returns None.
+    """
+    try:
+        return dbutils  # type: ignore[name-defined]
+    except NameError:
+        pass
+    try:
+        from pyspark.sql import SparkSession  # type: ignore
+        from pyspark.dbutils import DBUtils   # type: ignore
+        spark = SparkSession.builder.getOrCreate()
+        return DBUtils(spark)
+    except Exception:
+        return None
 
 # --- DBFS helpers -----------------------------------------------------------
 
@@ -25,7 +46,10 @@ def _is_dbfs_path(p: Path) -> bool:
 def _mkdirs(path: Path) -> None:
     """Create parent dirs. Use dbutils for DBFS, normal mkdir otherwise."""
     if _is_dbfs_path(path):
-        dbutils.fs.mkdirs("dbfs:/" + str(path)[len("/dbfs/"):])  # type: ignore[name-defined]
+        dbu = _get_dbutils()
+        if dbu is None:
+            raise RuntimeError("DBFS path detected but dbutils is unavailable.")
+        dbu.fs.mkdirs("dbfs:/" + str(path)[len("/dbfs/"):])
     else:
         path.mkdir(parents=True, exist_ok=True)
 
@@ -40,8 +64,11 @@ def _checksum_md5(s: str) -> str:
 def _atomic_write_text(path: Path, text: str) -> None:
     """Sidecar writer (manifest/checksum). Use dbutils on DBFS; atomic tempfile locally."""
     if _is_dbfs_path(path):
+        dbu = _get_dbutils()
+        if dbu is None:
+            raise RuntimeError("DBFS path detected but dbutils is unavailable.")
         _mkdirs(path.parent)
-        dbutils.fs.put("dbfs:/" + str(path)[len("/dbfs/"):], text, overwrite=True)  # type: ignore[name-defined]
+        dbu.fs.put("dbfs:/" + str(path)[len("/dbfs/"):], text, overwrite=True)
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("wt", delete=False, dir=path.parent, encoding="utf-8") as tmp:
@@ -97,17 +124,16 @@ def write_raw_jsonl(
         raw = raw_text
     else:
         if _is_dbfs_path(data_path):
-            # Write to local /tmp then copy to DBFS (robust on Databricks)
+            # robust: /tmp -> copy to dbfs
             with tempfile.TemporaryDirectory() as tdir:
                 tmp_out = Path(tdir) / data_path.name
                 with gzip.open(tmp_out, "wt", encoding="utf-8") as f:
                     f.write(raw_text.strip().replace("\n", " ") + "\n")
                 _mkdirs(data_path.parent)
-                dbutils.fs.cp(  # type: ignore[name-defined]
-                    "file:" + str(tmp_out),
-                    "dbfs:/" + str(data_path)[len("/dbfs/"):],
-                    recurse=False
-                )
+                dbu = _get_dbutils()
+                if dbu is None:
+                    raise RuntimeError("DBFS path detected but dbutils is unavailable.")
+                dbu.fs.cp("file:" + str(tmp_out), "dbfs:/" + str(data_path)[len("/dbfs/"):], recurse=False)
         else:
             data_path.parent.mkdir(parents=True, exist_ok=True)
             with gzip.open(data_path, "wt", encoding="utf-8") as f:
