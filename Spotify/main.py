@@ -28,7 +28,7 @@ def main():
     run_id = str(int(time.time() * 1000))
     paths = write_raw_jsonl(
         raw_text=raw_text,
-        base_dir="dbfs:/FileStore/bronze",
+        base_dir="dbfs:/tmp/bronze",
         dataset="spotify_search",
         partitions={"q": q, "type": type_},
         run_id=run_id,
