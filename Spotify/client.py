@@ -1,7 +1,7 @@
 import requests
 import logging
 import time
-from Spotify.oauth import SpotifyOAuthClient
+from oauth import SpotifyOAuthClient
 
 BASE_URL = "https://api.spotify.com/v1/search"
 
