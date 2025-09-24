@@ -28,7 +28,6 @@ class SpotifyClient:
 
                 r.raise_for_status()
                 data = r.json()
-                print("it worked")
                 return data
             
             except requests.exceptions.RequestException as e:

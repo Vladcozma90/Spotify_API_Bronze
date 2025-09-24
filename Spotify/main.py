@@ -16,7 +16,7 @@ def main():
     client = SpotifyClient(auth)
 
     # 2) Call API (dict), validate structure
-    q, type_, limit = "videoclub", "artist", 50
+    q, type_, limit = "videoclub", "artist", 5
     data = client.get_spotify(q=q, type=type_, limit=limit)   # returns dict
     validate_json(data)
 
@@ -28,7 +28,7 @@ def main():
     run_id = str(int(time.time() * 1000))
     paths = write_raw_jsonl(
         raw_text=raw_text,
-        base_dir="dbfs:/mnt/bronze",
+        base_dir="dbfs:/FileStore/bronze",
         dataset="spotify_search",
         partitions={"q": q, "type": type_},
         run_id=run_id,
